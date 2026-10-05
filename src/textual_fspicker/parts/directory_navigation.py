@@ -414,26 +414,33 @@ class DirectoryNavigation(OptionList):
         # or the sort order be changed, or something, we're going to keep a
         # parallel copy of *all* possible options for the list and then
         # populate from that.
-        self._entries = []
-
-        # Now loop over the directory, looking for directories within and
-        # streaming them into the list via the app thread.
+        #
+        # The copy is built up locally to this worker and is only handed to
+        # the widget if this worker is still the current one. A worker that
+        # has been superseded must not touch the copy a newer worker is
+        # building -- a cancelled one appending into it is what could make
+        # duplicated entries show up in the listing.
         worker = get_current_worker()
         styles = self._styles
+        entries: list[DirectoryEntry] = []
         try:
             for entry in self._location.iterdir():
                 if worker.is_cancelled:
                     return
                 if is_dir(entry) or (is_file(entry) and self.show_files):
-                    self._entries.append(
-                        DirectoryEntry(self._location / entry.name, styles)
-                    )
+                    entries.append(DirectoryEntry(self._location / entry.name, styles))
         except PermissionError:
             self.post_message(self.PermissionError(self, self._location))
 
         # Now that we've loaded everything up, let's make the call to update
-        # the display.
-        self.app.call_from_thread(self._repopulate_display)
+        # the display, if this worker is still the one that owns it.
+        def publish() -> None:
+            if worker.is_cancelled:
+                return
+            self._entries = entries
+            self._repopulate_display()
+
+        self.app.call_from_thread(publish)
 
     def _watch__location(self) -> None:
         """Reload the content if the location changes."""
